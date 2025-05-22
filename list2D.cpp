@@ -8,16 +8,17 @@ using namespace std;
 #define str string
 class List2Dim {
 private:
-    class Node {
+    class Node { // by use smart Pinters
     public:
         int data;
-        Node* next = nul, * prev = nul, * up = nul, * down = nul;
+        shared_ptr<Node> next, down; 
+        weak_ptr<Node> prev, up;  
         explicit Node(int val) : data(val) {}
     };
-    typedef Node* NodePtr;
+    using NodePtr = shared_ptr<Node>; 
     NodePtr head = nul;
     int rowsCt = 0;
-    class RowProxy { // for [][]
+    class RowProxy { // for [][] use in function in class 2D
         NodePtr Rrow;
     public:
         explicit RowProxy(NodePtr r) : Rrow(r) {}
@@ -27,12 +28,22 @@ private:
             return col->data;
         }
     };
-public:
+public: 
     List2Dim() = default;
+    List2Dim(const List2Dim& other) { // Copy Constructor
+        head = nul; rowsCt = 0;
+        for (NodePtr row = other.head; row; row = row->down) {
+            vector<int> tempRow;
+            for (NodePtr col = row; col; col = col->next) {
+                tempRow.push_back(col->data);
+            }
+            addRowArray(tempRow.data(), tempRow.size());
+        }
+    }
     ~List2Dim() { clear(); }
     bool empty() const { return !head; }
-    int  rowCount() const { return rowsCt; }
-    class Iterator {
+    int  rowCount() const { return rowsCt; } 
+    class Iterator { 
         NodePtr row, col;
     public:
         explicit Iterator(NodePtr start) : row(start), col(start) {}
@@ -47,22 +58,36 @@ public:
             }
             return *this;
         }
-        bool operator!=(const Iterator& other) const {
-            return col != other.col;
+        Iterator operator++(int) { 
+            Iterator tmp = *this;
+            ++(*this);
+            return tmp;
         }
-        bool operator==(const Iterator& other) const {
-            return col == other.col;
+        Iterator& operator--() {
+            auto p = col ? col->prev.lock() : nul; 
+            if (p) 
+                col = p;
+            else if (row) { 
+                auto u = row->up.lock();
+                row = u;  col = row; 
+            }
+            return *this;
         }
-        bool isRowEnd() const {
-            return col && col->next == nul;
+        Iterator operator--(int) {
+            Iterator tmp = *this; 
+            --(*this);
+            return tmp;
         }
+        bool operator!=(const Iterator& other) const { return col != other.col; }
+        bool operator==(const Iterator& other) const { return col == other.col; }
+        bool isRowEnd() const { return col && col->next == nul; }
     };
     Iterator begin() { return Iterator(head); }
     Iterator end() { return Iterator(nul); }
     Iterator begin() const { return Iterator(head); }
     Iterator end()   const { return Iterator(nul); }
     void addRowEnd(int value) {
-        NodePtr node = new Node(value);
+        NodePtr node = make_shared<Node>(value); 
         if (!head) head = node;
         else {
             NodePtr tail = head;
@@ -73,7 +98,7 @@ public:
         ++rowsCt;
     }
     void addRowBeg(int value) {
-        NodePtr node = new Node(value);
+        NodePtr node = make_shared<Node>(value);
         if (!head) head = node;
         else {
             node->down = head;
@@ -84,17 +109,23 @@ public:
     }
     void addByIndex(int x, int y, int value) {
         if (x < 0 || x >= rowsCt) return;
-        NodePtr row = head;
-        for (int i = 0; i < x; ++i) row = row->down;
-        NodePtr node = new Node(value);
+        NodePtr row = head; 
+        for (int i = 0; i < x; ++i) row = row->down; 
+        NodePtr node = make_shared<Node>(value); 
         if (y == 0) {
-            node->next = row;
+            node->next = row; 
             if (row) row->prev = node;
-            if (row && row->up) { node->up = row->up; row->up->down = node; }
-            if (row && row->down) { node->down = row->down; row->down->up = node; }
+            if (auto up = row->up.lock()) {
+                node->up = up;
+                up->down = node;
+            }
+            if (auto down = row->down) {
+                node->down = down;
+                down->up = node;
+            }
             if (x == 0) head = node;
             else {
-                NodePtr upRow = head;
+                NodePtr upRow =  head;
                 for (int i = 0; i < x - 1; ++i) upRow = upRow->down;
                 upRow->down = node;
             }
@@ -106,7 +137,7 @@ public:
             if (prev->next) prev->next->prev = node;
             prev->next = node;
             node->prev = prev;
-            NodePtr upRow = row->up;
+            NodePtr upRow = row->up.lock();
             for (int i = 0; i < y && upRow; ++i) upRow = upRow->next;
             if (upRow) { node->up = upRow; upRow->down = node; }
             NodePtr downRow = row->down;
@@ -118,15 +149,20 @@ public:
         if (x < 0 || x >= rowsCt || !head) return;
         NodePtr target = head;
         for (int i = 0; i < x; ++i) target = target->down;
-        if (target->up) target->up->down = target->down;
-        else head = target->down;
-        if (target->down) target->down->up = target->up;
+        auto up = target->up.lock();
+        auto down = target->down;
+        if (up) up->down = down;
+        else head = down;
+        if (down) down->up = up;
         while (target) {
-            NodePtr nxt = target->next;
-            delete target;
-            target = nxt;
+            auto next = target->next;
+            target->next = nul; 
+            target->prev.reset();
+            target->up.reset();
+            target->down = nul;
+            target = next;
         }
-        --rowsCt;
+        --rowsCt; 
     }
     void removeCol(int y) {
         if (!head || y < 0) return;
@@ -140,26 +176,27 @@ public:
             }
             NodePtr nextRow = row->down;
             if (col) {
-                NodePtr left = col->prev;
-                NodePtr right = col->next;
-                if (left) {
-                    left->next = right;
-                }
+                auto left = col->prev.lock();
+                auto right = col->next;
+                if (left)  left->next = right;
                 else {
-                    if (row == head) {
-                        head = right;
-                    }
+                    if (row == head) head = right;
                     else {
-                        NodePtr upRow = row->up;
+                        auto upRow = row->up.lock();
                         if (upRow) upRow->down = right;
                     }
                 }
                 if (right) {
                     right->prev = left;
                 }
-                if (col->up) col->up->down = col->down;
-                if (col->down) col->down->up = col->up;
-                delete col;
+                auto up = col->up.lock();
+                auto down = col->down;
+                if (up) up->down = down;
+                if (down) down->up = up;
+                col->next = nul;
+                col->down = nul;
+                col->prev.reset();
+                col->up.reset();
             }
             row = nextRow;
         }
@@ -184,16 +221,6 @@ public:
         for (auto& val : *this) val = fn(val);
     }
     void clear() {
-        NodePtr row = head;
-        while (row) {
-            NodePtr col = row;
-            row = row->down;
-            while (col) {
-                NodePtr tmp = col; 
-                col = col->next;
-                delete tmp;
-            }
-        }
         head = nul; 
         rowsCt = 0;
     }
@@ -236,9 +263,32 @@ public:
         }
         return it1 == end1 && it2 == end2;
     }
+    List2Dim& operator=(const List2Dim& other) {
+        if (this != &other) {
+            clear();
+            for (NodePtr row = other.head; row; row = row->down) {
+                vector<int> tempRow;
+                for (NodePtr col = row; col; col = col->next) {
+                    tempRow.push_back(col->data);
+                }
+                addRowArray(tempRow.data(), tempRow.size());
+            }
+        }
+        return *this;
+    }
+    friend ostream& operator<<(ostream& os, const List2Dim& list) {
+        int r = 0;
+        for (auto row = list.head; row; row = row->down, ++r) {
+            os << "Row " << r << ": ";
+            for (auto col = row; col; col = col->next)
+                os << col->data << ' ';
+            os << '\n';
+        }
+        return os;
+    }
     void reverseRows() {
         if (!head || rowsCt < 2) return;
-        NodePtr cur = head, prev = nul; 
+        NodePtr cur = head, prev = nul;
         while (cur) {
             NodePtr nxt = cur->down;
             cur->down = prev;
@@ -247,18 +297,6 @@ public:
             cur = nxt;
         }
         head = prev;
-    }
-    List2Dim& operator=(const List2Dim& other) {
-        if (this != &other) {
-            clear();
-            for (NodePtr row = other.head; row; row = row->down) {
-                int cols = countRowEle(0);
-                for (NodePtr col = row; col; col = col->next) {
-                    addByIndex(rowCount(), cols++, col->data);
-                }
-            }
-        }
-        return *this;
     }
     void addRowArray(int* arr, int size) {
         if (!arr || size <= 0) return;
@@ -279,7 +317,8 @@ int main() {
     ios::sync_with_stdio(false); 
     cin.tie(nul); 
 
-    List2Dim ls;
+    // Tests of All Functions 2D Linked List : 
+    List2Dim ls; // object 1
     ls.addRowEnd(2); ls.addRowEnd(3); ls.addRowBeg(1);
     ls.addByIndex(0, 1, 10); ls.addByIndex(1, 1, 100); ls.addByIndex(2, 1, 1000); ls.addByIndex(1, 2, 200); ls.addByIndex(0, 0, 22);  
     ls.printAll();
@@ -292,17 +331,27 @@ int main() {
     ls.addRowArray(arr, 5); ls.printAll();   
     int arr2[] = { 21,22,23 };
     ls.addColArray(arr2, 3); ls.printAll();
-    List2Dim d2; 
+    List2Dim d2;  // object 2
     d2.addRowArray(arr, 5); d2.addRowArray(arr, 5); d2.printAll();
-    List2Dim res = ls + d2;  res.printAll();
+    List2Dim res = ls + d2;  res.printAll(); // object 3
     if (d2 == ls)  cout << "Are Equal!!" << endl; 
     else cout << "Are not Equal!!!" << endl; 
     int arr2d[3][3] = { {1,2,3},{4,5,6},{7,8,9} }; 
     ls.add2DArray(arr2d, 3, 3); ls.printAll();
     ls.reverseRows(); ls.printAll();
     ls.removeCol(1); ls.printAll();
-
     for (List2Dim::Iterator it = ls.begin(); it != ls.end(); ++it) { cout << *it << ' ';if (it.isRowEnd()) cout << '\n'; } // print By Iterator
+    cout << ls << endl;
+    List2Dim a; // test Copy Constructor
+    int arrt[] = { 1, 2, 3 };
+    a.addRowArray(arrt, 3);
+    List2Dim b = a; 
+    a[0][0] = 100;
+    b.printAll(); 
+    List2Dim c;  // test 2
+    c = a; 
+    a[0][1] = 200; 
+    c.printAll();
 
     return 0;
 }
